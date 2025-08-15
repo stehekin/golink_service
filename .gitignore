@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+.claude/
+*.log
+.env
+.DS_Store
