@@ -252,6 +252,10 @@ mod tests {
 
         let response = create_golink(create_req, storage).await;
         assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -263,7 +267,11 @@ mod tests {
         };
 
         let response = create_golink(create_req, storage).await;
-        assert!(response.is_ok()); // Should return OK with error in response body
+        assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -280,7 +288,11 @@ mod tests {
         };
 
         let response = create_golink(create_req, storage).await;
-        assert!(response.is_ok()); // Should return OK with conflict error in response body
+        assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -293,6 +305,10 @@ mod tests {
 
         let response = get_golink("go/test".to_string(), storage).await;
         assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -319,6 +335,10 @@ mod tests {
 
         let response = get_all_golinks(storage).await;
         assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -335,6 +355,10 @@ mod tests {
 
         let response = update_golink("go/test".to_string(), update_req, storage).await;
         assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -346,7 +370,11 @@ mod tests {
         };
 
         let response = update_golink("go/nonexistent".to_string(), update_req, storage).await;
-        assert!(response.is_ok()); // Should return OK with not found error in response body
+        assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -359,6 +387,10 @@ mod tests {
 
         let response = delete_golink("go/test".to_string(), storage).await;
         assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -366,6 +398,10 @@ mod tests {
         let storage = create_test_storage().await;
 
         let response = delete_golink("go/nonexistent".to_string(), storage).await;
-        assert!(response.is_ok()); // Should return OK with not found error in response body
+        assert!(response.is_ok());
+        
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::NOT_FOUND);
     }
 }
