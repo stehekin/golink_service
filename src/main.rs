@@ -79,11 +79,14 @@ async fn main() {
             delete_golink(format!("{}/{}", prefix, name), storage)
         });
 
+    // IMPORTANT: Route order matters! Specific routes must come before general routes.
+    // get_route (/golinks/{prefix}/{name}) must come before get_all_route (/golinks)
+    // to prevent the general route from matching specific golink requests.
     let routes = create_route
-        .or(get_all_route)
-        .or(get_route)
-        .or(update_route)
-        .or(delete_route)
+        .or(get_route)        // Specific: /golinks/{prefix}/{name}
+        .or(update_route)     // Specific: /golinks/{prefix}/{name}
+        .or(delete_route)     // Specific: /golinks/{prefix}/{name}
+        .or(get_all_route)    // General: /golinks (must be last)
         .with(warp::cors().allow_any_origin());
 
     println!("Golink service running on http://localhost:3030");
