@@ -41,6 +41,7 @@ async fn main() {
         .and_then(create_golink);
 
     let get_all_route = warp::path("golinks")
+        .and(warp::path::end())
         .and(warp::get())
         .and(with_storage(storage.clone()))
         .and_then(get_all_golinks);

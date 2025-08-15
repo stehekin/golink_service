@@ -15,6 +15,7 @@ fn create_app() -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::R
         .and_then(golink::service::create_golink);
 
     let get_all_route = warp::path("golinks")
+        .and(warp::path::end())
         .and(warp::get())
         .and(golink::service::with_storage(storage.clone()))
         .and_then(golink::service::get_all_golinks);
