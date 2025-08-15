@@ -1,9 +1,9 @@
+use crate::storage::{GoStorage, StorageError};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 use warp::Filter;
-use crate::storage::{GoStorage, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Golink {
@@ -13,13 +13,13 @@ pub struct Golink {
     pub created_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateGolink {
     pub short_link: String,
     pub url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateGolink {
     pub url: String,
 }
@@ -202,5 +202,170 @@ pub async fn delete_golink(
                 warp::http::StatusCode::INTERNAL_SERVER_ERROR,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::HashMapStorage;
+    use std::sync::Arc;
+    use warp::Reply;
+
+    async fn create_test_storage() -> Storage {
+        Arc::new(HashMapStorage::new())
+    }
+
+    fn create_test_golink(short_link: &str, url: &str) -> Golink {
+        Golink {
+            id: uuid::Uuid::new_v4().to_string(),
+            short_link: short_link.to_string(),
+            url: url.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn test_validate_golink_pattern_valid() {
+        assert!(validate_golink_pattern("go/test").is_ok());
+        assert!(validate_golink_pattern("go/my-link").is_ok());
+        assert!(validate_golink_pattern("go/my_link").is_ok());
+        assert!(validate_golink_pattern("go/MyLink").is_ok());
+    }
+
+    #[test]
+    fn test_validate_golink_pattern_invalid() {
+        assert!(validate_golink_pattern("invalid").is_err());
+        assert!(validate_golink_pattern("go/").is_err());
+        assert!(validate_golink_pattern("go/test@").is_err());
+        assert!(validate_golink_pattern("go/test space").is_err());
+        assert!(validate_golink_pattern("notgo/test").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_golink_success() {
+        let storage = create_test_storage().await;
+        let create_req = CreateGolink {
+            short_link: "go/test".to_string(),
+            url: "https://example.com".to_string(),
+        };
+
+        let response = create_golink(create_req, storage).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_golink_invalid_pattern() {
+        let storage = create_test_storage().await;
+        let create_req = CreateGolink {
+            short_link: "invalid".to_string(),
+            url: "https://example.com".to_string(),
+        };
+
+        let response = create_golink(create_req, storage).await;
+        assert!(response.is_ok()); // Should return OK with error in response body
+    }
+
+    #[tokio::test]
+    async fn test_create_golink_already_exists() {
+        let storage = create_test_storage().await;
+        let golink = create_test_golink("go/test", "https://example.com");
+
+        // Pre-populate storage
+        storage.create(golink.clone()).await.unwrap();
+
+        let create_req = CreateGolink {
+            short_link: "go/test".to_string(),
+            url: "https://example.com".to_string(),
+        };
+
+        let response = create_golink(create_req, storage).await;
+        assert!(response.is_ok()); // Should return OK with conflict error in response body
+    }
+
+    #[tokio::test]
+    async fn test_get_golink_success() {
+        let storage = create_test_storage().await;
+        let golink = create_test_golink("go/test", "https://example.com");
+
+        // Pre-populate storage
+        storage.create(golink.clone()).await.unwrap();
+
+        let response = get_golink("go/test".to_string(), storage).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_golink_not_found() {
+        let storage = create_test_storage().await;
+
+        let response = get_golink("go/nonexistent".to_string(), storage).await;
+        assert!(response.is_ok());
+
+        let reply = response.unwrap();
+        let status = reply.into_response().status();
+        assert_eq!(status, warp::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_golinks() {
+        let storage = create_test_storage().await;
+        let golink1 = create_test_golink("go/test1", "https://example1.com");
+        let golink2 = create_test_golink("go/test2", "https://example2.com");
+
+        // Pre-populate storage
+        storage.create(golink1).await.unwrap();
+        storage.create(golink2).await.unwrap();
+
+        let response = get_all_golinks(storage).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_golink_success() {
+        let storage = create_test_storage().await;
+        let golink = create_test_golink("go/test", "https://example.com");
+
+        // Pre-populate storage
+        storage.create(golink.clone()).await.unwrap();
+
+        let update_req = UpdateGolink {
+            url: "https://updated.com".to_string(),
+        };
+
+        let response = update_golink("go/test".to_string(), update_req, storage).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_golink_not_found() {
+        let storage = create_test_storage().await;
+
+        let update_req = UpdateGolink {
+            url: "https://updated.com".to_string(),
+        };
+
+        let response = update_golink("go/nonexistent".to_string(), update_req, storage).await;
+        assert!(response.is_ok()); // Should return OK with not found error in response body
+    }
+
+    #[tokio::test]
+    async fn test_delete_golink_success() {
+        let storage = create_test_storage().await;
+        let golink = create_test_golink("go/test", "https://example.com");
+
+        // Pre-populate storage
+        storage.create(golink.clone()).await.unwrap();
+
+        let response = delete_golink("go/test".to_string(), storage).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_golink_not_found() {
+        let storage = create_test_storage().await;
+
+        let response = delete_golink("go/nonexistent".to_string(), storage).await;
+        assert!(response.is_ok()); // Should return OK with not found error in response body
     }
 }

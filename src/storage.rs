@@ -1,8 +1,8 @@
+use crate::service::Golink;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::service::Golink;
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -88,7 +88,7 @@ pub struct SqliteStorage {
 impl SqliteStorage {
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         let pool = sqlx::SqlitePool::connect(database_url).await?;
-        
+
         // Create table if it doesn't exist
         sqlx::query(
             r#"
@@ -111,7 +111,7 @@ impl SqliteStorage {
 impl GoStorage for SqliteStorage {
     async fn create(&self, golink: Golink) -> StorageResult<()> {
         let result = sqlx::query(
-            "INSERT INTO golinks (id, short_link, url, created_at) VALUES (?, ?, ?, ?)"
+            "INSERT INTO golinks (id, short_link, url, created_at) VALUES (?, ?, ?, ?)",
         )
         .bind(&golink.id)
         .bind(&golink.short_link)
@@ -131,7 +131,7 @@ impl GoStorage for SqliteStorage {
 
     async fn get(&self, short_link: &str) -> StorageResult<Golink> {
         let row = sqlx::query_as::<_, Golink>(
-            "SELECT id, short_link, url, created_at FROM golinks WHERE short_link = ?"
+            "SELECT id, short_link, url, created_at FROM golinks WHERE short_link = ?",
         )
         .bind(short_link)
         .fetch_optional(&self.pool)
@@ -143,7 +143,7 @@ impl GoStorage for SqliteStorage {
 
     async fn get_all(&self) -> StorageResult<Vec<Golink>> {
         let rows = sqlx::query_as::<_, Golink>(
-            "SELECT id, short_link, url, created_at FROM golinks ORDER BY created_at DESC"
+            "SELECT id, short_link, url, created_at FROM golinks ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
         .await
@@ -190,5 +190,285 @@ impl GoStorage for SqliteStorage {
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
 
         Ok(count > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::Golink;
+    use tempfile::NamedTempFile;
+
+    fn create_test_golink(short_link: &str, url: &str) -> Golink {
+        Golink {
+            id: uuid::Uuid::new_v4().to_string(),
+            short_link: short_link.to_string(),
+            url: url.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    mod hashmap_storage_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_create_and_get_golink() {
+            let storage = HashMapStorage::new();
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Test create
+            let result = storage.create(golink.clone()).await;
+            assert!(result.is_ok());
+
+            // Test get
+            let retrieved = storage.get(&golink.short_link).await;
+            assert!(retrieved.is_ok());
+            let retrieved_golink = retrieved.unwrap();
+            assert_eq!(retrieved_golink.short_link, golink.short_link);
+            assert_eq!(retrieved_golink.url, golink.url);
+        }
+
+        #[tokio::test]
+        async fn test_create_duplicate_returns_error() {
+            let storage = HashMapStorage::new();
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Create first time
+            let result1 = storage.create(golink.clone()).await;
+            assert!(result1.is_ok());
+
+            // Create second time should fail
+            let result2 = storage.create(golink.clone()).await;
+            assert!(matches!(result2, Err(StorageError::AlreadyExists)));
+        }
+
+        #[tokio::test]
+        async fn test_get_nonexistent_returns_not_found() {
+            let storage = HashMapStorage::new();
+            let result = storage.get("go/nonexistent").await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_get_all_golinks() {
+            let storage = HashMapStorage::new();
+            let golink1 = create_test_golink("go/test1", "https://example1.com");
+            let golink2 = create_test_golink("go/test2", "https://example2.com");
+
+            storage.create(golink1.clone()).await.unwrap();
+            storage.create(golink2.clone()).await.unwrap();
+
+            let all_golinks = storage.get_all().await.unwrap();
+            assert_eq!(all_golinks.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_update_golink() {
+            let storage = HashMapStorage::new();
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            storage.create(golink.clone()).await.unwrap();
+
+            let updated = storage
+                .update(&golink.short_link, "https://updated.com".to_string())
+                .await;
+            assert!(updated.is_ok());
+            let updated_golink = updated.unwrap();
+            assert_eq!(updated_golink.url, "https://updated.com");
+        }
+
+        #[tokio::test]
+        async fn test_update_nonexistent_returns_not_found() {
+            let storage = HashMapStorage::new();
+            let result = storage
+                .update("go/nonexistent", "https://example.com".to_string())
+                .await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_delete_golink() {
+            let storage = HashMapStorage::new();
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            storage.create(golink.clone()).await.unwrap();
+
+            let result = storage.delete(&golink.short_link).await;
+            assert!(result.is_ok());
+
+            // Verify it's deleted
+            let get_result = storage.get(&golink.short_link).await;
+            assert!(matches!(get_result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_delete_nonexistent_returns_not_found() {
+            let storage = HashMapStorage::new();
+            let result = storage.delete("go/nonexistent").await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_exists() {
+            let storage = HashMapStorage::new();
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Should not exist initially
+            let exists_before = storage.exists(&golink.short_link).await.unwrap();
+            assert!(!exists_before);
+
+            // Create and check exists
+            storage.create(golink.clone()).await.unwrap();
+            let exists_after = storage.exists(&golink.short_link).await.unwrap();
+            assert!(exists_after);
+        }
+    }
+
+    #[cfg(feature = "sqlite-tests")]
+    mod sqlite_storage_tests {
+        use super::*;
+
+        async fn create_test_sqlite_storage() -> SqliteStorage {
+            let temp_file = NamedTempFile::new().unwrap();
+            let db_path = temp_file.path().to_str().unwrap();
+            // Use file:// prefix for SQLite URLs in tests
+            let db_url = format!("sqlite://{}?mode=rwc", db_path);
+            SqliteStorage::new(&db_url).await.unwrap()
+        }
+
+        #[tokio::test]
+        async fn test_create_and_get_golink() {
+            let storage = create_test_sqlite_storage().await;
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Test create
+            let result = storage.create(golink.clone()).await;
+            assert!(result.is_ok());
+
+            // Test get
+            let retrieved = storage.get(&golink.short_link).await;
+            assert!(retrieved.is_ok());
+            let retrieved_golink = retrieved.unwrap();
+            assert_eq!(retrieved_golink.short_link, golink.short_link);
+            assert_eq!(retrieved_golink.url, golink.url);
+        }
+
+        #[tokio::test]
+        async fn test_create_duplicate_returns_error() {
+            let storage = create_test_sqlite_storage().await;
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Create first time
+            let result1 = storage.create(golink.clone()).await;
+            assert!(result1.is_ok());
+
+            // Create second time should fail
+            let result2 = storage.create(golink.clone()).await;
+            assert!(matches!(result2, Err(StorageError::AlreadyExists)));
+        }
+
+        #[tokio::test]
+        async fn test_get_nonexistent_returns_not_found() {
+            let storage = create_test_sqlite_storage().await;
+            let result = storage.get("go/nonexistent").await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_get_all_golinks() {
+            let storage = create_test_sqlite_storage().await;
+            let golink1 = create_test_golink("go/test1", "https://example1.com");
+            let golink2 = create_test_golink("go/test2", "https://example2.com");
+
+            storage.create(golink1.clone()).await.unwrap();
+            storage.create(golink2.clone()).await.unwrap();
+
+            let all_golinks = storage.get_all().await.unwrap();
+            assert_eq!(all_golinks.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_update_golink() {
+            let storage = create_test_sqlite_storage().await;
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            storage.create(golink.clone()).await.unwrap();
+
+            let updated = storage
+                .update(&golink.short_link, "https://updated.com".to_string())
+                .await;
+            assert!(updated.is_ok());
+            let updated_golink = updated.unwrap();
+            assert_eq!(updated_golink.url, "https://updated.com");
+        }
+
+        #[tokio::test]
+        async fn test_update_nonexistent_returns_not_found() {
+            let storage = create_test_sqlite_storage().await;
+            let result = storage
+                .update("go/nonexistent", "https://example.com".to_string())
+                .await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_delete_golink() {
+            let storage = create_test_sqlite_storage().await;
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            storage.create(golink.clone()).await.unwrap();
+
+            let result = storage.delete(&golink.short_link).await;
+            assert!(result.is_ok());
+
+            // Verify it's deleted
+            let get_result = storage.get(&golink.short_link).await;
+            assert!(matches!(get_result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_delete_nonexistent_returns_not_found() {
+            let storage = create_test_sqlite_storage().await;
+            let result = storage.delete("go/nonexistent").await;
+            assert!(matches!(result, Err(StorageError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_exists() {
+            let storage = create_test_sqlite_storage().await;
+            let golink = create_test_golink("go/test", "https://example.com");
+
+            // Should not exist initially
+            let exists_before = storage.exists(&golink.short_link).await.unwrap();
+            assert!(!exists_before);
+
+            // Create and check exists
+            storage.create(golink.clone()).await.unwrap();
+            let exists_after = storage.exists(&golink.short_link).await.unwrap();
+            assert!(exists_after);
+        }
+
+        #[tokio::test]
+        async fn test_persistence_across_connections() {
+            let temp_file = NamedTempFile::new().unwrap();
+            let db_path = temp_file.path().to_str().unwrap();
+            let db_url = format!("sqlite://{}?mode=rwc", db_path);
+
+            let golink = create_test_golink("go/persistent", "https://example.com");
+
+            // Create storage, add golink, drop storage
+            {
+                let storage = SqliteStorage::new(&db_url).await.unwrap();
+                storage.create(golink.clone()).await.unwrap();
+            }
+
+            // Create new storage instance, verify data persists
+            {
+                let storage = SqliteStorage::new(&db_url).await.unwrap();
+                let retrieved = storage.get(&golink.short_link).await.unwrap();
+                assert_eq!(retrieved.short_link, golink.short_link);
+                assert_eq!(retrieved.url, golink.url);
+            }
+        }
     }
 }
