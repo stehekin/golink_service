@@ -1,14 +1,30 @@
 mod service;
+mod storage;
 
-use service::{
-    Storage, UpdateGolink, create_golink, delete_golink, get_all_golinks, get_golink,
-    update_golink, with_storage,
-};
+use service::{Storage, UpdateGolink, create_golink, delete_golink, get_all_golinks, get_golink, update_golink, with_storage};
+use storage::{HashMapStorage, SqliteStorage};
+use std::sync::Arc;
 use warp::Filter;
 
 #[tokio::main]
 async fn main() {
-    let storage: Storage = service::create_storage();
+    // Choose storage backend based on environment variable or default to in-memory
+    let storage: Storage = if std::env::var("USE_SQLITE").is_ok() {
+        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "golinks.db".to_string());
+        match SqliteStorage::new(&database_url).await {
+            Ok(sqlite_storage) => Arc::new(sqlite_storage),
+            Err(e) => {
+                eprintln!("Failed to initialize SQLite storage: {}", e);
+                eprintln!("Falling back to in-memory storage");
+                Arc::new(HashMapStorage::new())
+            }
+        }
+    } else {
+        Arc::new(HashMapStorage::new())
+    };
+
+    let storage_type = if std::env::var("USE_SQLITE").is_ok() { "SQLite" } else { "In-memory HashMap" };
+    println!("Using {} storage", storage_type);
 
     let create_route = warp::path("golinks")
         .and(warp::post())

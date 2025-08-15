@@ -1,12 +1,11 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 use warp::Filter;
+use crate::storage::{GoStorage, StorageError};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Golink {
     pub id: String,
     pub short_link: String,
@@ -25,11 +24,7 @@ pub struct UpdateGolink {
     pub url: String,
 }
 
-pub type Storage = Arc<RwLock<HashMap<String, Golink>>>;
-
-pub fn create_storage() -> Storage {
-    Arc::new(RwLock::new(HashMap::new()))
-}
+pub type Storage = Arc<dyn GoStorage>;
 
 pub fn with_storage(
     storage: Storage,
@@ -58,16 +53,6 @@ pub async fn create_golink(
         ));
     }
 
-    let mut store = storage.write().await;
-
-    if store.contains_key(&create_golink.short_link) {
-        let error_response = serde_json::json!({"error": "Golink already exists"});
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&error_response),
-            warp::http::StatusCode::CONFLICT,
-        ));
-    }
-
     let golink = Golink {
         id: Uuid::new_v4().to_string(),
         short_link: create_golink.short_link.clone(),
@@ -75,42 +60,88 @@ pub async fn create_golink(
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    store.insert(create_golink.short_link, golink.clone());
-
-    Ok(warp::reply::with_status(
-        warp::reply::json(&golink),
-        warp::http::StatusCode::CREATED,
-    ))
+    match storage.create(golink.clone()).await {
+        Ok(_) => Ok(warp::reply::with_status(
+            warp::reply::json(&golink),
+            warp::http::StatusCode::CREATED,
+        )),
+        Err(StorageError::AlreadyExists) => {
+            let error_response = serde_json::json!({"error": "Golink already exists"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::CONFLICT,
+            ))
+        }
+        Err(StorageError::DatabaseError(e)) => {
+            let error_response = serde_json::json!({"error": format!("Database error: {}", e)});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+        Err(StorageError::NotFound) => {
+            let error_response = serde_json::json!({"error": "Unexpected error"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+    }
 }
 
 pub async fn get_golink(
     short_link: String,
     storage: Storage,
 ) -> Result<warp::reply::WithStatus<warp::reply::Json>, warp::Rejection> {
-    let store = storage.read().await;
-
-    match store.get(&short_link) {
-        Some(golink) => Ok(warp::reply::with_status(
-            warp::reply::json(golink),
+    match storage.get(&short_link).await {
+        Ok(golink) => Ok(warp::reply::with_status(
+            warp::reply::json(&golink),
             warp::http::StatusCode::OK,
         )),
-        None => Ok(warp::reply::with_status(
+        Err(StorageError::NotFound) => Ok(warp::reply::with_status(
             warp::reply::json(&serde_json::json!({"error": "Golink not found"})),
             warp::http::StatusCode::NOT_FOUND,
         )),
+        Err(StorageError::DatabaseError(e)) => {
+            let error_response = serde_json::json!({"error": format!("Database error: {}", e)});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+        Err(_) => {
+            let error_response = serde_json::json!({"error": "Unexpected error"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
     }
 }
 
 pub async fn get_all_golinks(
     storage: Storage,
 ) -> Result<warp::reply::WithStatus<warp::reply::Json>, warp::Rejection> {
-    let store = storage.read().await;
-    let golinks: Vec<&Golink> = store.values().collect();
-
-    Ok(warp::reply::with_status(
-        warp::reply::json(&golinks),
-        warp::http::StatusCode::OK,
-    ))
+    match storage.get_all().await {
+        Ok(golinks) => Ok(warp::reply::with_status(
+            warp::reply::json(&golinks),
+            warp::http::StatusCode::OK,
+        )),
+        Err(StorageError::DatabaseError(e)) => {
+            let error_response = serde_json::json!({"error": format!("Database error: {}", e)});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+        Err(_) => {
+            let error_response = serde_json::json!({"error": "Unexpected error"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+    }
 }
 
 pub async fn update_golink(
@@ -118,20 +149,29 @@ pub async fn update_golink(
     update_golink: UpdateGolink,
     storage: Storage,
 ) -> Result<warp::reply::WithStatus<warp::reply::Json>, warp::Rejection> {
-    let mut store = storage.write().await;
-
-    match store.get_mut(&short_link) {
-        Some(golink) => {
-            golink.url = update_golink.url;
-            Ok(warp::reply::with_status(
-                warp::reply::json(golink),
-                warp::http::StatusCode::OK,
-            ))
-        }
-        None => Ok(warp::reply::with_status(
+    match storage.update(&short_link, update_golink.url).await {
+        Ok(golink) => Ok(warp::reply::with_status(
+            warp::reply::json(&golink),
+            warp::http::StatusCode::OK,
+        )),
+        Err(StorageError::NotFound) => Ok(warp::reply::with_status(
             warp::reply::json(&serde_json::json!({"error": "Golink not found"})),
             warp::http::StatusCode::NOT_FOUND,
         )),
+        Err(StorageError::DatabaseError(e)) => {
+            let error_response = serde_json::json!({"error": format!("Database error: {}", e)});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+        Err(_) => {
+            let error_response = serde_json::json!({"error": "Unexpected error"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
     }
 }
 
@@ -139,16 +179,28 @@ pub async fn delete_golink(
     short_link: String,
     storage: Storage,
 ) -> Result<warp::reply::WithStatus<warp::reply::Json>, warp::Rejection> {
-    let mut store = storage.write().await;
-
-    match store.remove(&short_link) {
-        Some(_) => Ok(warp::reply::with_status(
+    match storage.delete(&short_link).await {
+        Ok(_) => Ok(warp::reply::with_status(
             warp::reply::json(&serde_json::json!({"message": "Golink deleted successfully"})),
             warp::http::StatusCode::OK,
         )),
-        None => Ok(warp::reply::with_status(
+        Err(StorageError::NotFound) => Ok(warp::reply::with_status(
             warp::reply::json(&serde_json::json!({"error": "Golink not found"})),
             warp::http::StatusCode::NOT_FOUND,
         )),
+        Err(StorageError::DatabaseError(e)) => {
+            let error_response = serde_json::json!({"error": format!("Database error: {}", e)});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+        Err(_) => {
+            let error_response = serde_json::json!({"error": "Unexpected error"});
+            Ok(warp::reply::with_status(
+                warp::reply::json(&error_response),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
     }
 }
