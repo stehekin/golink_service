@@ -17,6 +17,7 @@ fn create_app() -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::R
     let get_all_route = warp::path("golinks")
         .and(warp::path::end())
         .and(warp::get())
+        .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(golink::service::with_storage(storage.clone()))
         .and_then(golink::service::get_all_golinks);
 
@@ -406,4 +407,88 @@ async fn test_full_crud_workflow() {
     assert_eq!(list_resp.status(), 200);
     let body: serde_json::Value = serde_json::from_slice(list_resp.body()).unwrap();
     assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_get_golinks_with_pagination() {
+    let app = create_app();
+
+    // Create multiple golinks to test pagination
+    let names = ["first", "second", "third", "fourth", "fifth"];
+    for (i, name) in names.iter().enumerate() {
+        let create_req = CreateGolink {
+            short_link: format!("go/{}", name),
+            url: format!("https://example{}.com", i + 1),
+        };
+
+        let create_resp = request()
+            .method("POST")
+            .path("/golinks")
+            .header("content-type", "application/json")
+            .json(&create_req)
+            .reply(&app)
+            .await;
+        assert_eq!(create_resp.status(), 201);
+    }
+
+    // Test pagination with page_size=2
+    let resp = request()
+        .method("GET")
+        .path("/golinks?page=1&page_size=2")
+        .reply(&app)
+        .await;
+
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+    assert!(body.is_object());
+    assert!(body["data"].is_array());
+    assert!(body["pagination"].is_object());
+    
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    
+    let pagination = &body["pagination"];
+    assert_eq!(pagination["page"], 1);
+    assert_eq!(pagination["page_size"], 2);
+    assert_eq!(pagination["total_items"], 5);
+    assert_eq!(pagination["total_pages"], 3);
+
+    // Test second page
+    let resp = request()
+        .method("GET")
+        .path("/golinks?page=2&page_size=2")
+        .reply(&app)
+        .await;
+
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    
+    let pagination = &body["pagination"];
+    assert_eq!(pagination["page"], 2);
+    assert_eq!(pagination["page_size"], 2);
+    assert_eq!(pagination["total_items"], 5);
+    assert_eq!(pagination["total_pages"], 3);
+
+    // Test last page
+    let resp = request()
+        .method("GET")
+        .path("/golinks?page=3&page_size=2")
+        .reply(&app)
+        .await;
+
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 1); // Only one item on last page
+    
+    let pagination = &body["pagination"];
+    assert_eq!(pagination["page"], 3);
+    assert_eq!(pagination["page_size"], 2);
+    assert_eq!(pagination["total_items"], 5);
+    assert_eq!(pagination["total_pages"], 3);
 }

@@ -43,6 +43,7 @@ async fn main() {
     let get_all_route = warp::path("golinks")
         .and(warp::path::end())
         .and(warp::get())
+        .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(with_storage(storage.clone()))
         .and_then(get_all_golinks);
 

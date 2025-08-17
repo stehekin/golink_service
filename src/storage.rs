@@ -18,6 +18,7 @@ pub trait GoStorage: Send + Sync {
     async fn create(&self, golink: Golink) -> StorageResult<()>;
     async fn get(&self, short_link: &str) -> StorageResult<Golink>;
     async fn get_all(&self) -> StorageResult<Vec<Golink>>;
+    async fn get_paginated(&self, page: usize, page_size: usize) -> StorageResult<(Vec<Golink>, usize)>;
     async fn update(&self, short_link: &str, url: String) -> StorageResult<Golink>;
     async fn delete(&self, short_link: &str) -> StorageResult<()>;
     async fn exists(&self, short_link: &str) -> StorageResult<bool>;
@@ -55,6 +56,23 @@ impl GoStorage for HashMapStorage {
     async fn get_all(&self) -> StorageResult<Vec<Golink>> {
         let store = self.data.read().await;
         Ok(store.values().cloned().collect())
+    }
+
+    async fn get_paginated(&self, page: usize, page_size: usize) -> StorageResult<(Vec<Golink>, usize)> {
+        let store = self.data.read().await;
+        let mut all_golinks: Vec<Golink> = store.values().cloned().collect();
+        all_golinks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        let total_items = all_golinks.len();
+        let offset = (page.saturating_sub(1)) * page_size;
+        
+        let paginated_items = if offset < total_items {
+            all_golinks.into_iter().skip(offset).take(page_size).collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok((paginated_items, total_items))
     }
 
     async fn update(&self, short_link: &str, url: String) -> StorageResult<Golink> {
@@ -150,6 +168,28 @@ impl GoStorage for SqliteStorage {
         .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
 
         Ok(rows)
+    }
+
+    async fn get_paginated(&self, page: usize, page_size: usize) -> StorageResult<(Vec<Golink>, usize)> {
+        let offset = (page.saturating_sub(1)) * page_size;
+
+        // Get total count
+        let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM golinks")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        // Get paginated results
+        let rows = sqlx::query_as::<_, Golink>(
+            "SELECT id, short_link, url, created_at FROM golinks ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        )
+        .bind(page_size as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        Ok((rows, total_count as usize))
     }
 
     async fn update(&self, short_link: &str, url: String) -> StorageResult<Golink> {
