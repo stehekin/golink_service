@@ -95,6 +95,16 @@ async fn main() {
         .with(warp::cors().allow_any_origin())
         .recover(handle_auth_rejection);
 
-    println!("Golink service running on http://localhost:3030");
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "3030".to_string())
+        .parse::<u16>()
+        .expect("PORT must be a valid u16 number");
+
+    let addr: std::net::SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .expect("Unable to parse socket address");
+
+    println!("Golink service running on http://{}", addr);
+    warp::serve(routes).run(addr).await;
 }
