@@ -105,7 +105,46 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
-        let pool = sqlx::SqlitePool::connect(database_url).await?;
+        // Ensure the database URL has the proper format and create directories if needed
+        let formatted_url = if database_url.starts_with("sqlite://") {
+            database_url.to_string()
+        } else {
+            // Handle relative and absolute file paths
+            let path = std::path::Path::new(database_url);
+            
+            // Create parent directories if they don't exist
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| sqlx::Error::Io(e))?;
+                }
+            }
+            
+            // Convert to proper SQLite URL format
+            let absolute_path = path.canonicalize()
+                .or_else(|_| {
+                    // If canonicalize fails (file doesn't exist yet), use absolute path
+                    if path.is_absolute() {
+                        Ok(path.to_path_buf())
+                    } else {
+                        std::env::current_dir()
+                            .map(|cwd| cwd.join(path))
+                            .map_err(|e| sqlx::Error::Io(e))
+                    }
+                })?;
+            
+            format!("sqlite://{}", absolute_path.display())
+        };
+
+        // Use SqliteConnectOptions to enable database creation
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use std::str::FromStr;
+        
+        let connect_options = SqliteConnectOptions::from_str(&formatted_url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+            
+        let pool = sqlx::SqlitePool::connect_with(connect_options).await?;
 
         // Create table if it doesn't exist
         sqlx::query(
