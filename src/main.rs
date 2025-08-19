@@ -3,7 +3,7 @@ mod storage;
 
 use service::{
     Storage, UpdateGolink, create_golink, delete_golink, get_all_golinks, get_golink,
-    update_golink, with_storage,
+    update_golink, with_storage, with_auth, handle_auth_rejection,
 };
 use std::sync::Arc;
 use storage::{HashMapStorage, SqliteStorage};
@@ -16,26 +16,33 @@ async fn main() {
         let database_url =
             std::env::var("DATABASE_URL").unwrap_or_else(|_| "golinks.db".to_string());
         match SqliteStorage::new(&database_url).await {
-            Ok(sqlite_storage) => Arc::new(sqlite_storage),
+            Ok(sqlite_storage) => {
+                println!("Using SQLite storage");
+                Arc::new(sqlite_storage)
+            },
             Err(e) => {
                 eprintln!("Failed to initialize SQLite storage: {}", e);
-                eprintln!("Falling back to in-memory storage");
-                Arc::new(HashMapStorage::new())
+                eprintln!("Exiting because USE_SQLITE is set but SQLite initialization failed.");
+                std::process::exit(1);
             }
         }
     } else {
+        println!("Using In-memory HashMap storage");
         Arc::new(HashMapStorage::new())
     };
-
-    let storage_type = if std::env::var("USE_SQLITE").is_ok() {
-        "SQLite"
+    
+    // Check if authentication is enabled
+    if std::env::var("AUTH_TOKEN").is_ok() {
+        println!("Authentication is ENABLED - All API endpoints require valid Bearer token");
+        println!("Set AUTH_TOKEN environment variable to configure the token");
     } else {
-        "In-memory HashMap"
-    };
-    println!("Using {} storage", storage_type);
+        println!("Authentication is DISABLED - All API endpoints are open to all requests");
+        println!("Set AUTH_TOKEN environment variable to enable authentication");
+    }
 
     let create_route = warp::path("golinks")
         .and(warp::post())
+        .and(with_auth()) // Require authentication for creating golinks
         .and(warp::body::json())
         .and(with_storage(storage.clone()))
         .and_then(create_golink);
@@ -43,6 +50,7 @@ async fn main() {
     let get_all_route = warp::path("golinks")
         .and(warp::path::end())
         .and(warp::get())
+        .and(with_auth()) // Require authentication for getting all golinks
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(with_storage(storage.clone()))
         .and_then(get_all_golinks);
@@ -52,6 +60,7 @@ async fn main() {
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::get())
+        .and(with_auth()) // Require authentication for getting specific golinks
         .and(with_storage(storage.clone()))
         .and_then(|prefix: String, name: String, storage: Storage| {
             get_golink(format!("{}/{}", prefix, name), storage)
@@ -62,6 +71,7 @@ async fn main() {
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::put())
+        .and(with_auth()) // Require authentication for updating golinks
         .and(warp::body::json())
         .and(with_storage(storage.clone()))
         .and_then(
@@ -75,6 +85,7 @@ async fn main() {
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::delete())
+        .and(with_auth()) // Require authentication for deleting golinks
         .and(with_storage(storage.clone()))
         .and_then(|prefix: String, name: String, storage: Storage| {
             delete_golink(format!("{}/{}", prefix, name), storage)
@@ -88,7 +99,8 @@ async fn main() {
         .or(update_route)     // Specific: /golinks/{prefix}/{name}
         .or(delete_route)     // Specific: /golinks/{prefix}/{name}
         .or(get_all_route)    // General: /golinks (must be last)
-        .with(warp::cors().allow_any_origin());
+        .with(warp::cors().allow_any_origin())
+        .recover(handle_auth_rejection);
 
     println!("Golink service running on http://localhost:3030");
     warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;

@@ -46,6 +46,86 @@ pub fn with_storage(
     warp::any().map(move || storage.clone())
 }
 
+// Authentication middleware
+pub fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    warp::header::optional::<String>("authorization")
+        .and_then(validate_token_optional)
+        .untuple_one()
+}
+
+async fn validate_token_optional(auth_header: Option<String>) -> Result<(), warp::Rejection> {
+    // Check if authentication is enabled via environment variable
+    let auth_token = match std::env::var("AUTH_TOKEN") {
+        Ok(token) if !token.is_empty() => token,
+        _ => {
+            // If no auth token is set, allow all requests (for backward compatibility)
+            return Ok(());
+        }
+    };
+
+    // Check if authorization header is present
+    let auth_header = match auth_header {
+        Some(header) => header,
+        None => {
+            return Err(warp::reject::custom(AuthError::MissingBearer));
+        }
+    };
+
+    // Extract token from "Bearer <token>" format
+    if let Some(token) = auth_header.strip_prefix("Bearer ") {
+        if token == auth_token {
+            Ok(())
+        } else {
+            Err(warp::reject::custom(AuthError::InvalidToken))
+        }
+    } else {
+        Err(warp::reject::custom(AuthError::MissingBearer))
+    }
+}
+
+
+// Custom error types for authentication
+#[derive(Debug)]
+pub enum AuthError {
+    MissingBearer,
+    InvalidToken,
+}
+
+impl warp::reject::Reject for AuthError {}
+
+// Error handling for authentication
+pub async fn handle_auth_rejection(
+    err: warp::Rejection,
+) -> Result<impl warp::Reply, std::convert::Infallible> {
+    if let Some(auth_error) = err.find::<AuthError>() {
+        let (code, message) = match auth_error {
+            AuthError::MissingBearer => (
+                warp::http::StatusCode::UNAUTHORIZED,
+                "Missing or invalid Authorization header. Expected: Bearer <token>",
+            ),
+            AuthError::InvalidToken => (
+                warp::http::StatusCode::UNAUTHORIZED,
+                "Invalid authentication token",
+            ),
+        };
+
+        let json = warp::reply::json(&serde_json::json!({
+            "error": message
+        }));
+
+        Ok(warp::reply::with_status(json, code))
+    } else {
+        // For other rejections, return a generic error
+        let json = warp::reply::json(&serde_json::json!({
+            "error": "Internal server error"
+        }));
+        Ok(warp::reply::with_status(
+            json,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
+    }
+}
+
 fn validate_golink_pattern(short_link: &str) -> Result<(), &'static str> {
     let re = Regex::new(r"^go/[a-zA-Z0-9_-]+$").unwrap();
     if re.is_match(short_link) {
@@ -278,8 +358,11 @@ pub async fn delete_golink(
 mod tests {
     use super::*;
     use crate::storage::HashMapStorage;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use warp::Reply;
+
+    // Mutex to ensure authentication tests run sequentially to avoid environment variable conflicts
+    static AUTH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     async fn create_test_storage() -> Storage {
         Arc::new(HashMapStorage::new())
@@ -500,5 +583,72 @@ mod tests {
         let reply = response.unwrap();
         let status = reply.into_response().status();
         assert_eq!(status, warp::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_success() {
+        let _guard = AUTH_TEST_LOCK.lock().unwrap();
+        
+        // Set a test token
+        unsafe { std::env::set_var("AUTH_TOKEN", "test-token-123"); }
+        
+        let result = validate_token_optional(Some("Bearer test-token-123".to_string())).await;
+        assert!(result.is_ok());
+        
+        // Clean up
+        unsafe { std::env::remove_var("AUTH_TOKEN"); }
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_invalid() {
+        let _guard = AUTH_TEST_LOCK.lock().unwrap();
+        
+        // Set a test token
+        unsafe { std::env::set_var("AUTH_TOKEN", "test-token-123"); }
+        
+        let result = validate_token_optional(Some("Bearer wrong-token".to_string())).await;
+        assert!(result.is_err());
+        
+        // Clean up
+        unsafe { std::env::remove_var("AUTH_TOKEN"); }
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_missing_bearer() {
+        let _guard = AUTH_TEST_LOCK.lock().unwrap();
+        
+        // Set a test token
+        unsafe { std::env::set_var("AUTH_TOKEN", "test-token-123"); }
+        
+        let result = validate_token_optional(Some("test-token-123".to_string())).await;
+        assert!(result.is_err());
+        
+        // Clean up
+        unsafe { std::env::remove_var("AUTH_TOKEN"); }
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_no_auth_required() {
+        let _guard = AUTH_TEST_LOCK.lock().unwrap();
+        
+        // Don't set AUTH_TOKEN - should allow all requests
+        unsafe { std::env::remove_var("AUTH_TOKEN"); }
+        
+        let result = validate_token_optional(Some("no-auth-header".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_missing_header() {
+        let _guard = AUTH_TEST_LOCK.lock().unwrap();
+        
+        // Set a test token
+        unsafe { std::env::set_var("AUTH_TOKEN", "test-token-123"); }
+        
+        let result = validate_token_optional(None).await;
+        assert!(result.is_err());
+        
+        // Clean up
+        unsafe { std::env::remove_var("AUTH_TOKEN"); }
     }
 }

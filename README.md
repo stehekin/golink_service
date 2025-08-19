@@ -11,16 +11,19 @@ A RESTful service written in Rust for managing golinks - short URL redirects wit
 - **RESTful API**: JSON-based HTTP endpoints
 - **CORS Support**: Cross-origin resource sharing enabled
 - **Error Handling**: Proper HTTP status codes and error responses
+- **Token Authentication**: Optional Bearer token authentication for all operations
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/golinks` | Create a new golink |
-| `GET` | `/golinks` | Get all golinks (supports pagination) |
-| `GET` | `/golinks/{go/name}` | Get a specific golink |
-| `PUT` | `/golinks/{go/name}` | Update a golink's URL |
-| `DELETE` | `/golinks/{go/name}` | Delete a golink |
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/golinks` | Create a new golink | ✓ |
+| `GET` | `/golinks` | Get all golinks (supports pagination) | ✓ |
+| `GET` | `/golinks/{go/name}` | Get a specific golink | ✓ |
+| `PUT` | `/golinks/{go/name}` | Update a golink's URL | ✓ |
+| `DELETE` | `/golinks/{go/name}` | Delete a golink | ✓ |
+
+**Note**: Authentication is required for all endpoints when the `AUTH_TOKEN` environment variable is set.
 
 ### Pagination Query Parameters
 
@@ -60,21 +63,66 @@ export DATABASE_URL=golinks.db
 cargo run
 ```
 
+#### Authentication Setup
+
+Authentication is optional and disabled by default. To enable authentication:
+
+**Enable Authentication**
+```bash
+# Set a secure token (use a strong, random token in production)
+export AUTH_TOKEN="your-secure-token-here"
+
+# Run the service
+cargo run
+```
+
+**Disable Authentication (Default)**
+```bash
+# Simply don't set AUTH_TOKEN or set it to empty
+unset AUTH_TOKEN
+cargo run
+```
+
+When authentication is enabled:
+- All operations (GET, POST, PUT, DELETE) require a valid Bearer token
+- Invalid or missing tokens return HTTP 401 Unauthorized
+- No operations are accessible without proper authentication
+
 ### API Examples
 
 #### Create a golink
+
+**Without Authentication (default)**
 ```bash
 curl -X POST http://localhost:3030/golinks \
   -H "Content-Type: application/json" \
   -d '{"short_link": "go/github", "url": "https://github.com"}'
 ```
 
+**With Authentication**
+```bash
+curl -X POST http://localhost:3030/golinks \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secure-token-here" \
+  -d '{"short_link": "go/github", "url": "https://github.com"}'
+```
+
 #### Get all golinks
+
+**Without Authentication (default)**
 ```bash
 curl -X GET http://localhost:3030/golinks
 ```
 
+**With Authentication**
+```bash
+curl -X GET http://localhost:3030/golinks \
+  -H "Authorization: Bearer your-secure-token-here"
+```
+
 #### Get golinks with pagination
+
+**Without Authentication (default)**
 ```bash
 # Get first page with 5 items per page
 curl -X GET "http://localhost:3030/golinks?page=1&page_size=5"
@@ -86,21 +134,58 @@ curl -X GET "http://localhost:3030/golinks?page=2&page_size=10"
 curl -X GET "http://localhost:3030/golinks?page=1"
 ```
 
+**With Authentication**
+```bash
+# Get first page with 5 items per page
+curl -X GET "http://localhost:3030/golinks?page=1&page_size=5" \
+  -H "Authorization: Bearer your-secure-token-here"
+
+# Get second page with 10 items per page
+curl -X GET "http://localhost:3030/golinks?page=2&page_size=10" \
+  -H "Authorization: Bearer your-secure-token-here"
+```
+
 #### Get a specific golink
+
+**Without Authentication (default)**
 ```bash
 curl -X GET http://localhost:3030/golinks/go/github
 ```
 
+**With Authentication**
+```bash
+curl -X GET http://localhost:3030/golinks/go/github \
+  -H "Authorization: Bearer your-secure-token-here"
+```
+
 #### Update a golink
+
+**Without Authentication (default)**
 ```bash
 curl -X PUT http://localhost:3030/golinks/go/github \
   -H "Content-Type: application/json" \
   -d '{"url": "https://github.com/explore"}'
 ```
 
+**With Authentication**
+```bash
+curl -X PUT http://localhost:3030/golinks/go/github \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secure-token-here" \
+  -d '{"url": "https://github.com/explore"}'
+```
+
 #### Delete a golink
+
+**Without Authentication (default)**
 ```bash
 curl -X DELETE http://localhost:3030/golinks/go/github
+```
+
+**With Authentication**
+```bash
+curl -X DELETE http://localhost:3030/golinks/go/github \
+  -H "Authorization: Bearer your-secure-token-here"
 ```
 
 ## Data Structure
