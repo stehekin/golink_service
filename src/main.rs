@@ -16,28 +16,21 @@ async fn main() {
         let database_url =
             std::env::var("DATABASE_URL").unwrap_or_else(|_| "golinks.db".to_string());
         match SqliteStorage::new(&database_url).await {
-            Ok(sqlite_storage) => {
-                println!("Using SQLite storage");
-                Arc::new(sqlite_storage)
-            },
+            Ok(sqlite_storage) => Arc::new(sqlite_storage),
             Err(e) => {
-                eprintln!("Failed to initialize SQLite storage: {}", e);
-                eprintln!("Exiting because USE_SQLITE is set but SQLite initialization failed.");
+                eprintln!("Error: Failed to initialize SQLite storage: {}", e);
                 std::process::exit(1);
             }
         }
     } else {
-        println!("Using In-memory HashMap storage");
         Arc::new(HashMapStorage::new())
     };
     
-    // Check if authentication is enabled
+    // Log authentication status
     if std::env::var("AUTH_TOKEN").is_ok() {
-        println!("Authentication is ENABLED - All API endpoints require valid Bearer token");
-        println!("Set AUTH_TOKEN environment variable to configure the token");
+        println!("Authentication: ENABLED");
     } else {
-        println!("Authentication is DISABLED - All API endpoints are open to all requests");
-        println!("Set AUTH_TOKEN environment variable to enable authentication");
+        println!("Authentication: DISABLED");
     }
 
     let create_route = warp::path("golinks")
